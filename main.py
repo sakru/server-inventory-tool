@@ -1,11 +1,19 @@
-# Meny och självtester för serverinventering.
+# Meny, kommandon och självtester.
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from kontroller import kontrollera_server
-from lagring import exportera_csv, las_servrar, spara_servrar
+from lagring import FALT, exportera_csv, las_servrar, spara_servrar
+
+
+def hamta_datafil():
+    filnamn = os.environ.get("INVENTORY_DATAFIL")
+    if filnamn:
+        return Path(filnamn).expanduser()
+    return Path(__file__).with_name("servrar.json")
 
 
 def hitta_server(servrar, namn):
@@ -21,6 +29,26 @@ def filtrera_servrar(servrar, miljo):
         if server["miljo"] == miljo:
             resultat.append(server)
     return resultat
+
+
+def visa_servrar(servrar):
+    if not servrar:
+        print("Inga servrar att visa.")
+        return
+
+    rader = [["Namn", "Adress", "Miljö", "Roll", "Status", "Senast kontrollerad"]]
+    for server in servrar:
+        rader.append([server[falt] or "-" for falt in FALT])
+
+    bredder = []
+    for kolumn in zip(*rader):
+        bredder.append(max(len(text) for text in kolumn))
+
+    for rad in rader:
+        delar = []
+        for text, bredd in zip(rad, bredder):
+            delar.append(f"{text:<{bredd}}")
+        print("  ".join(delar))
 
 
 def las_text(fragetext, utan_blanksteg=False):
@@ -58,6 +86,28 @@ def kontrollera_och_spara(servrar, server, datafil):
     return server["status"] == "up"
 
 
+def kontrollera_alla(servrar, datafil):
+    if not servrar:
+        print("Inga servrar att kontrollera.")
+        return True
+
+    alla_uppe = True
+    for server in servrar:
+        if not kontrollera_och_spara(servrar, server, datafil):
+            alla_uppe = False
+    return alla_uppe
+
+
+def exportera_rapport(servrar, datafil):
+    try:
+        rapportfil = exportera_csv(servrar, datafil.parent / "rapporter")
+    except (OSError, ValueError) as fel:
+        print("Kunde inte exportera rapporten:", fel)
+        return False
+    print("CSV-rapport:", rapportfil)
+    return True
+
+
 def starta_meny(servrar, datafil):
     while True:
         print()
@@ -74,8 +124,7 @@ def starta_meny(servrar, datafil):
         val = input("Ditt val: ").strip()
 
         if val == "1":
-            for server in servrar:
-                print(server["namn"], "-", server["adress"])
+            visa_servrar(servrar)
 
         elif val == "2":
             sokt_namn = las_text("Servernamn: ", utan_blanksteg=True)
@@ -84,10 +133,7 @@ def starta_meny(servrar, datafil):
             if hittad_server is None:
                 print("Servern finns inte.")
             else:
-                print("Hittad server:", hittad_server["namn"])
-                print("Adress:", hittad_server["adress"])
-                print("Status:", hittad_server["status"])
-                print("Senast kontrollerad:", hittad_server["senast_kontrollerad"])
+                visa_servrar([hittad_server])
 
         elif val == "4":
             while True:
@@ -158,8 +204,7 @@ def starta_meny(servrar, datafil):
             if not filtrerade:
                 print(f"Inga servrar i miljön {miljo}.")
             else:
-                for server in filtrerade:
-                    print(server["namn"], "-", server["adress"])
+                visa_servrar(filtrerade)
 
         elif val == "7":
             namn = las_text("Servernamn att kontrollera: ", utan_blanksteg=True)
@@ -170,19 +215,10 @@ def starta_meny(servrar, datafil):
                 kontrollera_och_spara(servrar, server, datafil)
 
         elif val == "8":
-            if not servrar:
-                print("Inga servrar att kontrollera.")
-            else:
-                for server in servrar:
-                    kontrollera_och_spara(servrar, server, datafil)
+            kontrollera_alla(servrar, datafil)
 
         elif val == "9":
-            try:
-                rapportfil = exportera_csv(servrar, datafil.parent / "rapporter")
-            except (OSError, ValueError) as fel:
-                print("Kunde inte exportera rapporten:", fel)
-            else:
-                print("CSV-rapport:", rapportfil)
+            exportera_rapport(servrar, datafil)
 
         elif val == "3":
             print("Avslutar.")
@@ -195,7 +231,7 @@ def starta_meny(servrar, datafil):
 def kora_tester():
     import csv
     import subprocess
-    from contextlib import redirect_stdout
+    from contextlib import redirect_stderr, redirect_stdout
     from datetime import datetime
     from io import StringIO
     from tempfile import TemporaryDirectory
@@ -210,6 +246,15 @@ def kora_tester():
             with redirect_stdout(StringIO()) as utskrift:
                 starta_meny(servrar, datafil)
         return utskrift.getvalue()
+
+    def provkor_kommando(argument):
+        with patch.dict(os.environ, {"INVENTORY_DATAFIL": str(datafil)}):
+            with redirect_stdout(StringIO()) as utskrift, redirect_stderr(StringIO()):
+                try:
+                    kod = main(argument)
+                except SystemExit as avslut:
+                    kod = avslut.code
+        return kod, utskrift.getvalue()
 
     try:
         with TemporaryDirectory() as katalog:
@@ -233,7 +278,23 @@ def kora_tester():
                     filtrera_servrar(servrar, server["miljo"]) == [server],
                     "Miljöfiltret gav fel resultat."
                 )
-            print("Sökning och miljöfilter: OK")
+            tabellservrar = [
+                dict(servrar[0], roll="utveckling och övervakning", senast_kontrollerad="2026-11-16 10:00"),
+                dict(servrar[1], status="down")
+            ]
+            with redirect_stdout(StringIO()) as utskrift:
+                visa_servrar(tabellservrar)
+                visa_servrar([])
+            rader = utskrift.getvalue().splitlines()
+            kontrollera(
+                rader[0].index("Status") == rader[1].index("unknown") == rader[2].index("down")
+                and all(varde in rader[1] for varde in tabellservrar[0].values())
+                and rader[-1] == "Inga servrar att visa.",
+                "Tabellen saknar data eller har ojämna kolumner."
+            )
+            kontrollera(provkor(["1", "2", "dev01", "3"]).count("Senast kontrollerad") == 2,
+                        "Listan och sökningen ska visa tabellen.")
+            print("Sökning, miljöfilter och tabell: OK")
 
             kontrollera(las_servrar(datafil) == [], "Saknad fil ska ge en tom lista.")
             spara_servrar(servrar, datafil)
@@ -257,7 +318,23 @@ def kora_tester():
                 lasare = csv.DictReader(fil)
                 kontrollera(lasare.fieldnames == list(servrar[0]) and list(lasare) == servrar, "Fel innehåll i CSV.")
             kontrollera(datafil.read_bytes() == tidigare_data, "Exporten ändrade JSON.")
-            print("JSON och CSV: OK")
+            with patch.dict(os.environ):
+                os.environ.pop("INVENTORY_DATAFIL", None)
+                kontrollera(hamta_datafil() == Path(__file__).with_name("servrar.json"), "Fel standardfil.")
+                os.environ["INVENTORY_DATAFIL"] = str(datafil)
+                kontrollera(hamta_datafil() == datafil, "Miljövariabeln valde inte rätt fil.")
+            kod, utskrift = provkor_kommando(["--lista", "--miljo", "prod"])
+            kontrollera(kod == 0 and "prod01" in utskrift and "dev01" not in utskrift
+                        and "test01" not in utskrift, "Kommandot filtrerade fel miljö.")
+            for argument, kod in [
+                (["--lista"], 0), (["--export"], 0), (["--help"], 0),
+                (["--miljo", "prod"], 2), (["--lista", "--export"], 2)
+            ]:
+                kontrollera(provkor_kommando(argument)[0] == kod, f"Fel exitkod för {argument}.")
+            kontrollera(len(list((Path(katalog) / "rapporter").glob("*.csv"))) == 2,
+                        "Export via kommandoraden skapade ingen rapport.")
+            kontrollera(datafil.read_bytes() == tidigare_data, "Kommandona ändrade JSON.")
+            print("JSON, CSV och inställningar: OK")
 
             svar = [
                 "99", "4", "", "fel namn", "prod01", "ny01",
@@ -268,7 +345,8 @@ def kora_tester():
             kontrollera(len(servrar) == 4, "Servern lades inte till.")
             kontrollera(
                 hitta_server(servrar, "ny01")["miljo"] == "dev"
-                and "ny01 - localhost" in utskrift and "prod01 - localhost" not in utskrift,
+                and "ny01" in utskrift and "localhost" in utskrift and "prod01" not in utskrift
+                and "Senast kontrollerad" in utskrift,
                 "Tillägg eller filtrering i menyn fungerar inte."
             )
             fore = las_servrar(datafil)
@@ -286,24 +364,35 @@ def kora_tester():
             print("Meny, tillägg och borttagning: OK")
 
             resultat = [
-                subprocess.CompletedProcess([], 0),
-                subprocess.CompletedProcess([], 1)
+                subprocess.CompletedProcess([], 1),
+                subprocess.CompletedProcess([], 0)
             ]
             with patch("kontroller.subprocess.run", side_effect=resultat) as ping:
-                provkor(["8", "3"])
+                kontrollera(provkor_kommando(["--kontrollera-alla"])[0] == 1,
+                            "En nerevarande server ska ge exitkod 1.")
+            servrar = las_servrar(datafil)
             kontrollera(
-                [server["status"] for server in servrar] == ["up", "down"],
+                [server["status"] for server in servrar] == ["down", "up"],
                 "Kontrollen av alla servrar gav fel status."
             )
             kontrollera(ping.call_count == len(servrar), "Alla servrar kontrollerades inte.")
             for anrop, server in zip(ping.call_args_list, servrar):
                 kontrollera(anrop.args[0] == ["ping", "-c", "1", server["adress"]], "Fel pingkommando.")
                 datetime.strptime(server["senast_kontrollerad"], "%Y-%m-%d %H:%M")
+            with patch("kontroller.subprocess.run", return_value=subprocess.CompletedProcess([], 0)):
+                for argument in [["--kontrollera", "dev01"], ["--kontrollera-alla"]]:
+                    kontrollera(provkor_kommando(argument)[0] == 0, "Lyckad kontroll ska ge exitkod 0.")
+            with patch("kontroller.subprocess.run") as ping:
+                for namn in ["saknas", ""]:
+                    kontrollera(provkor_kommando(["--kontrollera", namn])[0] == 1,
+                                "Okänt namn ska ge exitkod 1.")
+                kontrollera(not ping.called, "Okänt namn ska inte starta ping.")
             with patch("kontroller.subprocess.run", side_effect=subprocess.TimeoutExpired([], 3)):
-                provkor(["7", "dev01", "3"])
+                kontrollera(provkor_kommando(["--kontrollera", "dev01"])[0] == 1,
+                            "Timeout ska ge exitkod 1.")
+            servrar = las_servrar(datafil)
             kontrollera(servrar[0]["status"] == "down", "Timeout ska ge down.")
-            kontrollera(las_servrar(datafil) == servrar, "Status och tid sparades inte.")
-            print("Ping och kontrolltid: OK")
+            print("Ping, kontrolltid och exitkoder: OK")
 
             servrar[0]["senast_kontrollerad"] = "2000-01-01 00:00"
             spara_servrar(servrar, datafil)
@@ -338,22 +427,49 @@ def kora_tester():
     return 0
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Serverinventering med textmeny.")
-    parser.add_argument("--test", action="store_true", help="Kör självtester med tillfälliga data.")
+    parser = argparse.ArgumentParser(
+        description="Serverinventering med textmeny och kommandon.",
+        epilog="Utan argument startar textmenyn."
+    )
+    kommandon = parser.add_mutually_exclusive_group()
+    kommandon.add_argument("--lista", action="store_true", help="Visa alla servrar.")
+    kommandon.add_argument("--kontrollera", metavar="NAMN", help="Kontrollera en server och spara status.")
+    kommandon.add_argument("--kontrollera-alla", action="store_true", help="Kontrollera alla servrar.")
+    kommandon.add_argument("--export", dest="exportera", action="store_true", help="Skapa en CSV-rapport.")
+    kommandon.add_argument("--test", action="store_true", help="Kör självtester med tillfälliga data.")
+    parser.add_argument("--miljo", choices=["dev", "test", "prod"], help="Filtrera listan efter miljö, med --lista.")
     args = parser.parse_args(argv)
+
+    if args.miljo and not args.lista:
+        parser.error("--miljo används tillsammans med --lista.")
 
     if args.test:
         return kora_tester()
 
-    datafil = Path(__file__).with_name("servrar.json")
     try:
+        datafil = hamta_datafil()
         servrar = las_servrar(datafil)
-    except (ValueError, OSError) as fel:
-        print(f"Kunde inte läsa {datafil.name}: {fel}", file=sys.stderr)
+    except (ValueError, OSError, RuntimeError) as fel:
+        print(f"Kunde inte läsa datafilen: {fel}", file=sys.stderr)
         return 1
 
     try:
-        starta_meny(servrar, datafil)
+        if args.lista:
+            if args.miljo:
+                servrar = filtrera_servrar(servrar, args.miljo)
+            visa_servrar(servrar)
+        elif args.kontrollera is not None:
+            server = hitta_server(servrar, args.kontrollera)
+            if server is None:
+                print("Servern finns inte.")
+                return 1
+            return 0 if kontrollera_och_spara(servrar, server, datafil) else 1
+        elif args.kontrollera_alla:
+            return 0 if kontrollera_alla(servrar, datafil) else 1
+        elif args.exportera:
+            return 0 if exportera_rapport(servrar, datafil) else 1
+        else:
+            starta_meny(servrar, datafil)
     except EOFError:
         print("\nInmatningen avslutades.")
     except KeyboardInterrupt:
