@@ -1,6 +1,11 @@
-# Läser och sparar serverlistan i JSON.
+# Lagrar serverdata och exporterar CSV.
 
+import csv
 import json
+from datetime import datetime
+from pathlib import Path
+
+FALT = ["namn", "adress", "miljo", "roll", "status", "senast_kontrollerad"]
 
 
 def validera_servrar(servrar):
@@ -11,7 +16,7 @@ def validera_servrar(servrar):
     for server in servrar:
         if not isinstance(server, dict):
             raise ValueError("Varje server måste vara en dictionary.")
-        for falt in ["namn", "adress", "miljo", "roll", "status", "senast_kontrollerad"]:
+        for falt in FALT:
             if not isinstance(server.get(falt), str):
                 raise ValueError(f"Fältet '{falt}' saknas eller är inte en sträng.")
         for falt in ["namn", "adress", "roll"]:
@@ -48,3 +53,16 @@ def spara_servrar(servrar, datafil):
         json.dump(servrar, fil, ensure_ascii=False, indent=2)
         fil.write("\n")
     tillfallig_fil.replace(datafil)
+
+
+def exportera_csv(servrar, rapportkatalog):
+    validera_servrar(servrar)
+    rapportkatalog = Path(rapportkatalog)
+    rapportkatalog.mkdir(parents=True, exist_ok=True)
+    tid = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+    rapportfil = rapportkatalog / f"inventering_{tid}.csv"
+    with rapportfil.open("x", encoding="utf-8", newline="") as fil:
+        skrivare = csv.DictWriter(fil, fieldnames=FALT, extrasaction="ignore")
+        skrivare.writeheader()
+        skrivare.writerows(servrar)
+    return rapportfil

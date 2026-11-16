@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from kontroller import kontrollera_server
-from lagring import las_servrar, spara_servrar
+from lagring import exportera_csv, las_servrar, spara_servrar
 
 
 def hitta_server(servrar, namn):
@@ -70,6 +70,7 @@ def starta_meny(servrar, datafil):
         print("6. Visa servrar i en miljö")
         print("7. Kontrollera en server")
         print("8. Kontrollera alla servrar")
+        print("9. Exportera CSV")
         val = input("Ditt val: ").strip()
 
         if val == "1":
@@ -175,15 +176,24 @@ def starta_meny(servrar, datafil):
                 for server in servrar:
                     kontrollera_och_spara(servrar, server, datafil)
 
+        elif val == "9":
+            try:
+                rapportfil = exportera_csv(servrar, datafil.parent / "rapporter")
+            except (OSError, ValueError) as fel:
+                print("Kunde inte exportera rapporten:", fel)
+            else:
+                print("CSV-rapport:", rapportfil)
+
         elif val == "3":
             print("Avslutar.")
             break
 
         else:
-            print("Ogiltigt val. Välj ett nummer från 1 till 8.")
+            print("Ogiltigt val. Välj ett nummer från 1 till 9.")
 
 
 def kora_tester():
+    import csv
     import subprocess
     from contextlib import redirect_stdout
     from datetime import datetime
@@ -207,7 +217,7 @@ def kora_tester():
             servrar = [
                 {
                     "namn": namn, "adress": adress, "miljo": miljo,
-                    "roll": "webbserver", "status": "unknown", "senast_kontrollerad": ""
+                    "roll": "webb, övervakning", "status": "unknown", "senast_kontrollerad": ""
                 }
                 for namn, adress, miljo in [
                     ("dev01", "127.0.0.1", "dev"),
@@ -238,7 +248,16 @@ def kora_tester():
                     raise AssertionError("Felaktiga data godkändes.")
                 kontrollera(datafil.read_text() == innehall, "Läsningen ändrade filen.")
             spara_servrar(servrar, datafil)
-            print("JSON: OK")
+            tidigare_data = datafil.read_bytes()
+            provkor(["9", "3"])
+            rapporter = list((Path(katalog) / "rapporter").glob("inventering_*.csv"))
+            kontrollera(len(rapporter) == 1, "CSV-rapporten skapades inte.")
+            datetime.strptime(rapporter[0].stem, "inventering_%Y-%m-%d_%H%M%S_%f")
+            with rapporter[0].open(encoding="utf-8", newline="") as fil:
+                lasare = csv.DictReader(fil)
+                kontrollera(lasare.fieldnames == list(servrar[0]) and list(lasare) == servrar, "Fel innehåll i CSV.")
+            kontrollera(datafil.read_bytes() == tidigare_data, "Exporten ändrade JSON.")
+            print("JSON och CSV: OK")
 
             svar = [
                 "99", "4", "", "fel namn", "prod01", "ny01",
