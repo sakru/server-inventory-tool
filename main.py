@@ -1,28 +1,17 @@
-# Den första servern lagras som en dictionary med sex fält.
-forsta_server = {
-    "namn": "web01",
-    "adress": "example.com",
-    "miljo": "prod",
-    "roll": "webbserver",
-    "status": "unknown",
-    "senast_kontrollerad": ""
-}
+# Meny för serverinventering.
 
-# Listan innehåller först bara den första servern.
-servrar = [forsta_server]
+import sys
+from pathlib import Path
 
-# Skapa den andra servern och lägg till den i listan.
-andra_server = {
-    "namn": "db01",
-    "adress": "127.0.0.1",
-    "miljo": "prod",
-    "roll": "databas",
-    "status": "unknown",
-    "senast_kontrollerad": ""
-}
-servrar.append(andra_server)
+from lagring import las_servrar, spara_servrar
 
-# Visa menyn tills användaren väljer att avsluta.
+datafil = Path(__file__).with_name("servrar.json")
+
+try:
+    servrar = las_servrar(datafil)
+except (ValueError, OSError) as fel:
+    sys.exit(f"Kunde inte läsa {datafil.name}: {fel}")
+
 while True:
     print()
     print("Server Inventory Tool")
@@ -38,7 +27,6 @@ while True:
 
     elif val == "2":
         sokt_namn = input("Servernamn: ").strip()
-        # Nollställ sökresultatet inför varje ny sökning.
         hittad_server = None
 
         for server in servrar:
@@ -53,7 +41,6 @@ while True:
             print("Adress:", hittad_server["adress"])
 
     elif val == "4":
-        # Fråga igen tills namnet är ledigt och inte tomt.
         while True:
             namn = input("Namn på den nya servern: ").strip()
             namn_finns = False
@@ -72,7 +59,6 @@ while True:
 
         adress = input("Adress: ").strip()
 
-        # Godkänn bara miljöerna dev, test och prod.
         while True:
             miljo = input("Miljö (dev/test/prod): ").strip().lower()
             if miljo in ["dev", "test", "prod"]:
@@ -89,7 +75,13 @@ while True:
             "senast_kontrollerad": ""
         }
         servrar.append(ny_server)
-        print("Servern har lagts till:", namn)
+        try:
+            spara_servrar(servrar, datafil)
+        except OSError as fel:
+            servrar.remove(ny_server)
+            print("Kunde inte spara servern:", fel)
+        else:
+            print("Servern har lagts till och sparats:", namn)
 
     elif val == "3":
         print("Avslutar.")
