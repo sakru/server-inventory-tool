@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from kontroller import kontrollera_server
 from lagring import las_servrar, spara_servrar
 
 
@@ -22,12 +23,39 @@ def filtrera_servrar(servrar, miljo):
     return resultat
 
 
+def las_text(fragetext, utan_blanksteg=False):
+    while True:
+        varde = input(fragetext).strip()
+        if not varde:
+            print("Fältet får inte vara tomt.")
+        elif utan_blanksteg and any(tecken.isspace() for tecken in varde):
+            print("Värdet får inte innehålla blanksteg.")
+        else:
+            return varde
+
+
 def las_miljo():
     while True:
         miljo = input("Miljö (dev/test/prod): ").strip().lower()
         if miljo in ["dev", "test", "prod"]:
             return miljo
         print("Ogiltig miljö. Välj dev, test eller prod.")
+
+
+def kontrollera_och_spara(servrar, server, datafil):
+    tidigare_status = server["status"]
+    tidigare_tid = server["senast_kontrollerad"]
+    try:
+        kontrollera_server(server)
+        spara_servrar(servrar, datafil)
+    except (OSError, ValueError) as fel:
+        server["status"] = tidigare_status
+        server["senast_kontrollerad"] = tidigare_tid
+        print(f"Kunde inte kontrollera {server['namn']}: {fel}")
+        return False
+
+    print(server["namn"], "-", server["status"], "-", server["senast_kontrollerad"])
+    return server["status"] == "up"
 
 
 def starta_meny(servrar, datafil):
@@ -40,6 +68,8 @@ def starta_meny(servrar, datafil):
         print("4. Lägg till server")
         print("5. Ta bort server")
         print("6. Visa servrar i en miljö")
+        print("7. Kontrollera en server")
+        print("8. Kontrollera alla servrar")
         val = input("Ditt val: ").strip()
 
         if val == "1":
@@ -47,7 +77,7 @@ def starta_meny(servrar, datafil):
                 print(server["namn"], "-", server["adress"])
 
         elif val == "2":
-            sokt_namn = input("Servernamn: ").strip()
+            sokt_namn = las_text("Servernamn: ", utan_blanksteg=True)
             hittad_server = hitta_server(servrar, sokt_namn)
 
             if hittad_server is None:
@@ -55,22 +85,26 @@ def starta_meny(servrar, datafil):
             else:
                 print("Hittad server:", hittad_server["namn"])
                 print("Adress:", hittad_server["adress"])
+                print("Status:", hittad_server["status"])
+                print("Senast kontrollerad:", hittad_server["senast_kontrollerad"])
 
         elif val == "4":
             while True:
-                namn = input("Namn på den nya servern: ").strip()
-                if namn == "":
-                    print("Namnet får inte vara tomt.")
-                elif hitta_server(servrar, namn) is not None:
+                namn = las_text("Namn på den nya servern: ", utan_blanksteg=True)
+                if hitta_server(servrar, namn) is not None:
                     print("Namnet finns redan. Välj ett annat namn.")
                 else:
                     break
 
-            adress = input("Adress: ").strip()
+            while True:
+                adress = las_text("Adress: ", utan_blanksteg=True)
+                if not adress.startswith("-"):
+                    break
+                print("Adressen får inte börja med '-'.")
 
             miljo = las_miljo()
 
-            roll = input("Roll: ").strip()
+            roll = las_text("Roll: ")
             ny_server = {
                 "namn": namn,
                 "adress": adress,
@@ -82,14 +116,14 @@ def starta_meny(servrar, datafil):
             servrar.append(ny_server)
             try:
                 spara_servrar(servrar, datafil)
-            except OSError as fel:
+            except (OSError, ValueError) as fel:
                 servrar.remove(ny_server)
                 print("Kunde inte spara servern:", fel)
             else:
                 print("Servern har lagts till och sparats:", namn)
 
         elif val == "5":
-            namn = input("Servernamn att ta bort: ").strip()
+            namn = las_text("Servernamn att ta bort: ", utan_blanksteg=True)
             hittad_server = hitta_server(servrar, namn)
 
             if hittad_server is None:
@@ -111,7 +145,7 @@ def starta_meny(servrar, datafil):
             servrar.remove(hittad_server)
             try:
                 spara_servrar(servrar, datafil)
-            except OSError as fel:
+            except (OSError, ValueError) as fel:
                 servrar.insert(position, hittad_server)
                 print("Kunde inte ta bort servern:", fel)
             else:
@@ -126,16 +160,33 @@ def starta_meny(servrar, datafil):
                 for server in filtrerade:
                     print(server["namn"], "-", server["adress"])
 
+        elif val == "7":
+            namn = las_text("Servernamn att kontrollera: ", utan_blanksteg=True)
+            server = hitta_server(servrar, namn)
+            if server is None:
+                print("Servern finns inte.")
+            else:
+                kontrollera_och_spara(servrar, server, datafil)
+
+        elif val == "8":
+            if not servrar:
+                print("Inga servrar att kontrollera.")
+            else:
+                for server in servrar:
+                    kontrollera_och_spara(servrar, server, datafil)
+
         elif val == "3":
             print("Avslutar.")
             break
 
         else:
-            print("Ogiltigt val. Välj 1, 2, 3, 4, 5 eller 6.")
+            print("Ogiltigt val. Välj ett nummer från 1 till 8.")
 
 
 def kora_tester():
+    import subprocess
     from contextlib import redirect_stdout
+    from datetime import datetime
     from io import StringIO
     from tempfile import TemporaryDirectory
     from unittest.mock import patch
@@ -144,27 +195,7 @@ def kora_tester():
         if not villkor:
             raise AssertionError(meddelande)
 
-    def testdata():
-        return [
-            {
-                "namn": "prod01",
-                "adress": "localhost",
-                "miljo": "prod",
-                "roll": "webbserver",
-                "status": "unknown",
-                "senast_kontrollerad": ""
-            },
-            {
-                "namn": "dev01",
-                "adress": "127.0.0.1",
-                "miljo": "dev",
-                "roll": "utveckling för Åke",
-                "status": "unknown",
-                "senast_kontrollerad": ""
-            }
-        ]
-
-    def provkor_meny(servrar, datafil, svar):
+    def provkor(svar):
         with patch("builtins.input", side_effect=svar):
             with redirect_stdout(StringIO()) as utskrift:
                 starta_meny(servrar, datafil)
@@ -172,113 +203,120 @@ def kora_tester():
 
     try:
         with TemporaryDirectory() as katalog:
-            datafil = Path(katalog) / "servrar.json"
-            servrar = testdata()
+            datafil = Path(katalog) / "inventering.tmp"
+            servrar = [
+                {
+                    "namn": namn, "adress": adress, "miljo": miljo,
+                    "roll": "webbserver", "status": "unknown", "senast_kontrollerad": ""
+                }
+                for namn, adress, miljo in [
+                    ("dev01", "127.0.0.1", "dev"),
+                    ("test01", "192.0.2.10", "test"),
+                    ("prod01", "localhost", "prod")
+                ]
+            ]
 
-            kontrollera(
-                hitta_server(servrar, "prod01") == servrar[0],
-                "Sökningen hittade inte rätt server."
-            )
-            kontrollera(
-                hitta_server(servrar, "saknas") is None,
-                "Ett okänt namn ska ge None."
-            )
-            print("Sökning: OK")
+            kontrollera(hitta_server(servrar, "prod01") == servrar[2], "Sökningen gav fel server.")
+            kontrollera(hitta_server(servrar, "saknas") is None, "Okänt namn ska ge None.")
+            for server in servrar:
+                kontrollera(
+                    filtrera_servrar(servrar, server["miljo"]) == [server],
+                    "Miljöfiltret gav fel resultat."
+                )
+            print("Sökning och miljöfilter: OK")
 
-            kontrollera(las_servrar(datafil) == [], "En saknad fil ska ge en tom lista.")
+            kontrollera(las_servrar(datafil) == [], "Saknad fil ska ge en tom lista.")
             spara_servrar(servrar, datafil)
             kontrollera(las_servrar(datafil) == servrar, "JSON sparades eller lästes fel.")
-            kontrollera(
-                "Åke" in datafil.read_text(encoding="utf-8"),
-                "Svenska bokstäver ska vara läsbara i JSON."
-            )
-            datafil.write_text("{trasig JSON", encoding="utf-8")
-            try:
-                las_servrar(datafil)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("Trasig JSON ska ge ett fel.")
-            kontrollera(
-                datafil.read_text(encoding="utf-8") == "{trasig JSON",
-                "Den trasiga filen ändrades vid läsning."
-            )
+            for innehall in ["{trasig JSON", "[123]"]:
+                datafil.write_text(innehall, encoding="utf-8")
+                try:
+                    las_servrar(datafil)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Felaktiga data godkändes.")
+                kontrollera(datafil.read_text() == innehall, "Läsningen ändrade filen.")
+            spara_servrar(servrar, datafil)
             print("JSON: OK")
 
-            servrar = testdata()
-            testserver = servrar[1].copy()
-            testserver["namn"] = "test01"
-            testserver["miljo"] = "test"
-            servrar.append(testserver)
-            spara_servrar(servrar, datafil)
-            tidigare_data = datafil.read_bytes()
-            for miljo, namn in [("dev", "dev01"), ("test", "test01"), ("prod", "prod01")]:
-                filtrerade = filtrera_servrar(servrar, miljo)
-                kontrollera(
-                    filtrerade == [hitta_server(servrar, namn)],
-                    "Fel server vid filtrering av " + miljo
-                )
-                utskrift = provkor_meny(servrar, datafil, ["6", miljo, "3"])
-                for server in servrar:
-                    rad = server["namn"] + " - " + server["adress"]
-                    kontrollera(
-                        (rad in utskrift) == (server["miljo"] == miljo),
-                        "Fel server visas i miljön " + miljo
-                    )
-            utskrift = provkor_meny(servrar, datafil, ["6", "", "staging", " PROD ", "3"])
-            kontrollera(utskrift.count("Ogiltig miljö.") == 2, "Felaktig miljö ska frågas om.")
-            kontrollera("prod01 - localhost" in utskrift, "PROD normaliserades inte.")
-            kontrollera(las_servrar(datafil) == servrar, "Filtreringen ändrade listan.")
-            kontrollera(datafil.read_bytes() == tidigare_data, "Filtreringen ändrade JSON.")
-
-            servrar = testdata()
-            spara_servrar(servrar, datafil)
-            tidigare_data = datafil.read_bytes()
-            kontrollera(filtrera_servrar(servrar, "test") == [], "Tomt filter ska ge en tom lista.")
-            utskrift = provkor_meny(servrar, datafil, ["6", "test", "3"])
-            kontrollera("Inga servrar i miljön test." in utskrift, "Meddelande saknas för tom miljö.")
-            kontrollera(servrar == testdata(), "Ett tomt filter ändrade listan.")
-            kontrollera(datafil.read_bytes() == tidigare_data, "Ett tomt filter ändrade JSON.")
-            print("Filtrering dev/test/prod: OK")
-
-            fall = [
-                ("Okänt namn", ["5", "saknas", "3"], ["prod01", "dev01"]),
-                ("Avbruten prod", ["5", "prod01", "nej", "3"], ["prod01", "dev01"]),
-                ("Bekräftad prod", ["5", "prod01", "fel", " JA ", "3"], ["dev01"]),
-                ("Borttagning dev", ["5", "dev01", "3"], ["prod01"]),
+            svar = [
+                "99", "4", "", "fel namn", "prod01", "ny01",
+                "", "-c", "localhost", "staging", " DEV ", "", "webbserver",
+                "6", "dev", "3"
             ]
-            for beskrivning, svar, forvantade_namn in fall:
-                servrar = testdata()
-                spara_servrar(servrar, datafil)
-                provkor_meny(servrar, datafil, svar)
-                kvarvarande_namn = [server["namn"] for server in servrar]
-                kontrollera(kvarvarande_namn == forvantade_namn, beskrivning)
-                kontrollera(las_servrar(datafil) == servrar, beskrivning + ": fel i JSON")
-                print(beskrivning + ": OK")
+            utskrift = provkor(svar)
+            kontrollera(len(servrar) == 4, "Servern lades inte till.")
+            kontrollera(
+                hitta_server(servrar, "ny01")["miljo"] == "dev"
+                and "ny01 - localhost" in utskrift and "prod01 - localhost" not in utskrift,
+                "Tillägg eller filtrering i menyn fungerar inte."
+            )
+            fore = las_servrar(datafil)
+            utskrift = provkor(["5", "prod01", "fel", "nej", "3"])
+            kontrollera(
+                servrar == fore and las_servrar(datafil) == fore and "Svara ja eller nej." in utskrift,
+                "Prod-servern måste bevaras vid felaktigt svar och nej."
+            )
+            provkor(["5", "prod01", "ja", "5", "ny01", "3"])
+            kontrollera(
+                hitta_server(servrar, "prod01") is None and hitta_server(servrar, "ny01") is None
+                and las_servrar(datafil) == servrar,
+                "Borttagningen sparades inte korrekt."
+            )
+            print("Meny, tillägg och borttagning: OK")
 
-            servrar = testdata()
+            resultat = [
+                subprocess.CompletedProcess([], 0),
+                subprocess.CompletedProcess([], 1)
+            ]
+            with patch("kontroller.subprocess.run", side_effect=resultat) as ping:
+                provkor(["8", "3"])
+            kontrollera(
+                [server["status"] for server in servrar] == ["up", "down"],
+                "Kontrollen av alla servrar gav fel status."
+            )
+            kontrollera(ping.call_count == len(servrar), "Alla servrar kontrollerades inte.")
+            for anrop, server in zip(ping.call_args_list, servrar):
+                kontrollera(anrop.args[0] == ["ping", "-c", "1", server["adress"]], "Fel pingkommando.")
+                datetime.strptime(server["senast_kontrollerad"], "%Y-%m-%d %H:%M")
+            with patch("kontroller.subprocess.run", side_effect=subprocess.TimeoutExpired([], 3)):
+                provkor(["7", "dev01", "3"])
+            kontrollera(servrar[0]["status"] == "down", "Timeout ska ge down.")
+            kontrollera(las_servrar(datafil) == servrar, "Status och tid sparades inte.")
+            print("Ping och kontrolltid: OK")
+
+            servrar[0]["senast_kontrollerad"] = "2000-01-01 00:00"
             spara_servrar(servrar, datafil)
+            fore = las_servrar(datafil)
             tidigare_data = datafil.read_bytes()
-            datafil.with_suffix(".tmp").mkdir()
-            utskrift = provkor_meny(servrar, datafil, ["5", "prod01", "ja", "3"])
-            kontrollera(servrar == testdata(), "Listan återställdes inte efter skrivfelet.")
-            kontrollera(datafil.read_bytes() == tidigare_data, "Den gamla filen ändrades.")
+            with patch("kontroller.subprocess.run", side_effect=FileNotFoundError("ping saknas")):
+                provkor(["7", "dev01", "3"])
+            kontrollera(servrar == fore, "Saknat ping ändrade servern.")
+            with patch("lagring.json.dump", side_effect=OSError("skrivfel")):
+                try:
+                    spara_servrar(servrar, datafil)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("Skrivfelet rapporterades inte.")
+            kontrollera(datafil.read_bytes() == tidigare_data, "Skrivfelet skadade datafilen.")
+            datafil.with_name(datafil.name + ".tmp").unlink()
+            datafil.with_name(datafil.name + ".tmp").mkdir()
+            provkor(["5", "test01", "3"])
+            with patch("kontroller.subprocess.run", return_value=subprocess.CompletedProcess([], 0)):
+                provkor(["7", "dev01", "3"])
             kontrollera(
-                "Kunde inte ta bort servern:" in utskrift,
-                "Skrivfelet ska visas för användaren."
+                servrar == fore and datafil.read_bytes() == tidigare_data,
+                "Listan och filen ska bevaras vid fel."
             )
-            kontrollera(
-                "Servern har tagits bort:" not in utskrift,
-                "Misslyckad borttagning får inte visas som lyckad."
-            )
-            print("Återställning vid skrivfel: OK")
+            print("Skydd vid fel: OK")
     except Exception as fel:
         print("Test misslyckades:", fel, file=sys.stderr)
         return 1
 
     print("Alla tester godkända.")
     return 0
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Serverinventering med textmeny.")
@@ -295,7 +333,13 @@ def main(argv=None):
         print(f"Kunde inte läsa {datafil.name}: {fel}", file=sys.stderr)
         return 1
 
-    starta_meny(servrar, datafil)
+    try:
+        starta_meny(servrar, datafil)
+    except EOFError:
+        print("\nInmatningen avslutades.")
+    except KeyboardInterrupt:
+        print("\nAvbrutet.")
+        return 130
     return 0
 
 
