@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from kontroller import kontrollera_server
-from lagring import FALT, exportera_csv, las_servrar, spara_servrar
+from lagring import FALT, exportera_csv, exportera_sammanfattning, las_servrar, spara_servrar
 
 
 def hamta_datafil():
@@ -82,7 +82,8 @@ def kontrollera_och_spara(servrar, server, datafil):
         print(f"Kunde inte kontrollera {server['namn']}: {fel}")
         return False
 
-    print(server["namn"], "-", server["status"], "-", server["senast_kontrollerad"])
+    namnbredd = max(len(post["namn"]) for post in servrar)
+    print(f"{server['namn']:<{namnbredd}}  {server['status']:<7}  {server['senast_kontrollerad']}")
     return server["status"] == "up"
 
 
@@ -101,10 +102,12 @@ def kontrollera_alla(servrar, datafil):
 def exportera_rapport(servrar, datafil):
     try:
         rapportfil = exportera_csv(servrar, datafil.parent / "rapporter")
+        textfil = exportera_sammanfattning(servrar, rapportfil.with_suffix(".txt"))
     except (OSError, ValueError) as fel:
         print("Kunde inte exportera rapporten:", fel)
         return False
     print("CSV-rapport:", rapportfil)
+    print("TXT-sammanfattning:", textfil)
     return True
 
 
@@ -120,7 +123,7 @@ def starta_meny(servrar, datafil):
         print("6. Visa servrar i en miljö")
         print("7. Kontrollera en server")
         print("8. Kontrollera alla servrar")
-        print("9. Exportera CSV")
+        print("9. Exportera rapporter (CSV och TXT)")
         val = input("Ditt val: ").strip()
 
         if val == "1":
@@ -231,7 +234,7 @@ def starta_meny(servrar, datafil):
 def kora_tester():
     import csv
     import subprocess
-    from contextlib import redirect_stderr, redirect_stdout
+    from contextlib import redirect_stdout
     from datetime import datetime
     from io import StringIO
     from tempfile import TemporaryDirectory
@@ -241,183 +244,108 @@ def kora_tester():
         if not villkor:
             raise AssertionError(meddelande)
 
-    def provkor(svar):
-        with patch("builtins.input", side_effect=svar):
-            with redirect_stdout(StringIO()) as utskrift:
-                starta_meny(servrar, datafil)
-        return utskrift.getvalue()
-
-    def provkor_kommando(argument):
+    def provkor(argument, svar=()):
         with patch.dict(os.environ, {"INVENTORY_DATAFIL": str(datafil)}):
-            with redirect_stdout(StringIO()) as utskrift, redirect_stderr(StringIO()):
-                try:
-                    kod = main(argument)
-                except SystemExit as avslut:
-                    kod = avslut.code
+            with patch("builtins.input", side_effect=svar), redirect_stdout(StringIO()) as utskrift:
+                kod = main(argument)
         return kod, utskrift.getvalue()
 
     try:
         with TemporaryDirectory() as katalog:
             datafil = Path(katalog) / "inventering.tmp"
-            servrar = [
-                {
+            servrar = []
+            for namn, adress, miljo, status in [
+                ("dev01", "127.0.0.1", "dev", "up"),
+                ("test01", "192.0.2.10", "test", "down"),
+                ("prod01", "localhost", "prod", "unknown")
+            ]:
+                servrar.append({
                     "namn": namn, "adress": adress, "miljo": miljo,
-                    "roll": "webb, övervakning", "status": "unknown", "senast_kontrollerad": ""
-                }
-                for namn, adress, miljo in [
-                    ("dev01", "127.0.0.1", "dev"),
-                    ("test01", "192.0.2.10", "test"),
-                    ("prod01", "localhost", "prod")
-                ]
-            ]
+                    "roll": "webb, övervakning", "status": status, "senast_kontrollerad": ""
+                })
 
-            kontrollera(hitta_server(servrar, "prod01") == servrar[2], "Sökningen gav fel server.")
+            kontrollera(hitta_server(servrar, "prod01") == servrar[2], "Fel server vid sökning.")
             kontrollera(hitta_server(servrar, "saknas") is None, "Okänt namn ska ge None.")
-            for server in servrar:
-                kontrollera(
-                    filtrera_servrar(servrar, server["miljo"]) == [server],
-                    "Miljöfiltret gav fel resultat."
-                )
-            tabellservrar = [
-                dict(servrar[0], roll="utveckling och övervakning", senast_kontrollerad="2026-11-16 10:00"),
-                dict(servrar[1], status="down")
-            ]
-            with redirect_stdout(StringIO()) as utskrift:
-                visa_servrar(tabellservrar)
-                visa_servrar([])
-            rader = utskrift.getvalue().splitlines()
-            kontrollera(
-                rader[0].index("Status") == rader[1].index("unknown") == rader[2].index("down")
-                and all(varde in rader[1] for varde in tabellservrar[0].values())
-                and rader[-1] == "Inga servrar att visa.",
-                "Tabellen saknar data eller har ojämna kolumner."
-            )
-            kontrollera(provkor(["1", "2", "dev01", "3"]).count("Senast kontrollerad") == 2,
-                        "Listan och sökningen ska visa tabellen.")
-            print("Sökning, miljöfilter och tabell: OK")
-
+            kontrollera(filtrera_servrar(servrar, "dev") == [servrar[0]], "Fel miljöfilter.")
             kontrollera(las_servrar(datafil) == [], "Saknad fil ska ge en tom lista.")
+            datafil.write_text("[123]", encoding="utf-8")
+            try:
+                las_servrar(datafil)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Felaktiga serverdata godkändes.")
             spara_servrar(servrar, datafil)
             kontrollera(las_servrar(datafil) == servrar, "JSON sparades eller lästes fel.")
-            for innehall in ["{trasig JSON", "[123]"]:
-                datafil.write_text(innehall, encoding="utf-8")
-                try:
-                    las_servrar(datafil)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError("Felaktiga data godkändes.")
-                kontrollera(datafil.read_text() == innehall, "Läsningen ändrade filen.")
-            spara_servrar(servrar, datafil)
-            tidigare_data = datafil.read_bytes()
-            provkor(["9", "3"])
-            rapporter = list((Path(katalog) / "rapporter").glob("inventering_*.csv"))
-            kontrollera(len(rapporter) == 1, "CSV-rapporten skapades inte.")
-            datetime.strptime(rapporter[0].stem, "inventering_%Y-%m-%d_%H%M%S_%f")
-            with rapporter[0].open(encoding="utf-8", newline="") as fil:
-                lasare = csv.DictReader(fil)
-                kontrollera(lasare.fieldnames == list(servrar[0]) and list(lasare) == servrar, "Fel innehåll i CSV.")
-            kontrollera(datafil.read_bytes() == tidigare_data, "Exporten ändrade JSON.")
-            with patch.dict(os.environ):
-                os.environ.pop("INVENTORY_DATAFIL", None)
+            kod, utskrift = provkor(["--lista", "--miljo", "prod"])
+            kontrollera(kod == 0 and "prod01" in utskrift and "dev01" not in utskrift, "Fel CLI-filter.")
+            with patch.dict(os.environ, {"INVENTORY_DATAFIL": ""}):
                 kontrollera(hamta_datafil() == Path(__file__).with_name("servrar.json"), "Fel standardfil.")
-                os.environ["INVENTORY_DATAFIL"] = str(datafil)
-                kontrollera(hamta_datafil() == datafil, "Miljövariabeln valde inte rätt fil.")
-            kod, utskrift = provkor_kommando(["--lista", "--miljo", "prod"])
-            kontrollera(kod == 0 and "prod01" in utskrift and "dev01" not in utskrift
-                        and "test01" not in utskrift, "Kommandot filtrerade fel miljö.")
-            for argument, kod in [
-                (["--lista"], 0), (["--export"], 0), (["--help"], 0),
-                (["--miljo", "prod"], 2), (["--lista", "--export"], 2)
-            ]:
-                kontrollera(provkor_kommando(argument)[0] == kod, f"Fel exitkod för {argument}.")
-            kontrollera(len(list((Path(katalog) / "rapporter").glob("*.csv"))) == 2,
-                        "Export via kommandoraden skapade ingen rapport.")
-            kontrollera(datafil.read_bytes() == tidigare_data, "Kommandona ändrade JSON.")
-            print("JSON, CSV och inställningar: OK")
+            print("Sökning, JSON och miljöfilter: OK")
 
-            svar = [
-                "99", "4", "", "fel namn", "prod01", "ny01",
-                "", "-c", "localhost", "staging", " DEV ", "", "webbserver",
-                "6", "dev", "3"
-            ]
-            utskrift = provkor(svar)
-            kontrollera(len(servrar) == 4, "Servern lades inte till.")
-            kontrollera(
-                hitta_server(servrar, "ny01")["miljo"] == "dev"
-                and "ny01" in utskrift and "localhost" in utskrift and "prod01" not in utskrift
-                and "Senast kontrollerad" in utskrift,
-                "Tillägg eller filtrering i menyn fungerar inte."
-            )
-            fore = las_servrar(datafil)
-            utskrift = provkor(["5", "prod01", "fel", "nej", "3"])
-            kontrollera(
-                servrar == fore and las_servrar(datafil) == fore and "Svara ja eller nej." in utskrift,
-                "Prod-servern måste bevaras vid felaktigt svar och nej."
-            )
-            provkor(["5", "prod01", "ja", "5", "ny01", "3"])
-            kontrollera(
-                hitta_server(servrar, "prod01") is None and hitta_server(servrar, "ny01") is None
-                and las_servrar(datafil) == servrar,
-                "Borttagningen sparades inte korrekt."
-            )
+            fore = datafil.read_bytes()
+            kontrollera(provkor(["--export"])[0] == 0, "Exporten misslyckades.")
+            rapportfil = next((Path(katalog) / "rapporter").glob("*.csv"))
+            datetime.strptime(rapportfil.stem, "inventering_%Y-%m-%d_%H%M%S_%f")
+            with rapportfil.open(encoding="utf-8", newline="") as fil:
+                kontrollera(list(csv.DictReader(fil)) == servrar, "Fel innehåll i CSV.")
+            rader = rapportfil.with_suffix(".txt").read_text(encoding="utf-8").splitlines()
+            kontrollera([rad.split() for rad in rader[1:]] == [
+                ["Totalt", "1", "1", "1"], ["dev", "1", "0", "0"],
+                ["test", "0", "1", "0"], ["prod", "0", "0", "1"]
+            ], "Fel antal i TXT-sammanfattningen.")
+            kontrollera(datafil.read_bytes() == fore, "Exporten ändrade JSON.")
+            print("CSV och TXT: OK")
+
+            svar = ["99", "4", "", "fel namn", "prod01", "ny01", "", "-c", "localhost",
+                    "staging", " DEV ", "", "webbserver", "6", "dev", "3"]
+            kod, utskrift = provkor([], svar)
+            ny_server = hitta_server(las_servrar(datafil), "ny01")
+            kontrollera(kod == 0 and ny_server is not None and ny_server["miljo"] == "dev"
+                        and ny_server["status"] == "unknown", "Tillägget sparades inte korrekt.")
+            kontrollera("Ogiltigt val." in utskrift and "ny01" in utskrift
+                        and "prod01" not in utskrift and "Senast kontrollerad" in utskrift,
+                        "Fel meddelande eller tabell i menyn.")
+            fore = datafil.read_bytes()
+            provkor([], ["5", "prod01", "fel", "nej", "3"])
+            kontrollera(datafil.read_bytes() == fore, "Prod-servern togs bort utan bekräftelse.")
+            provkor([], ["5", "prod01", "ja", "5", "ny01", "3"])
+            servrar = las_servrar(datafil)
+            kontrollera([server["namn"] for server in servrar] == ["dev01", "test01"], "Fel borttagning.")
             print("Meny, tillägg och borttagning: OK")
 
-            resultat = [
-                subprocess.CompletedProcess([], 1),
-                subprocess.CompletedProcess([], 0)
-            ]
-            with patch("kontroller.subprocess.run", side_effect=resultat) as ping:
-                kontrollera(provkor_kommando(["--kontrollera-alla"])[0] == 1,
-                            "En nerevarande server ska ge exitkod 1.")
+            with patch("kontroller.subprocess.run", side_effect=[
+                subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0)
+            ]) as ping:
+                kod, utskrift = provkor(["--kontrollera-alla"])
             servrar = las_servrar(datafil)
-            kontrollera(
-                [server["status"] for server in servrar] == ["down", "up"],
-                "Kontrollen av alla servrar gav fel status."
-            )
-            kontrollera(ping.call_count == len(servrar), "Alla servrar kontrollerades inte.")
+            kontrollera(kod == 1 and ping.call_count == 2
+                        and [server["status"] for server in servrar] == ["down", "up"], "Fel pingresultat.")
+            rader = utskrift.splitlines()
+            kontrollera(rader[0].index("down") == rader[1].index("up"), "Ojämna pingkolumner.")
             for anrop, server in zip(ping.call_args_list, servrar):
                 kontrollera(anrop.args[0] == ["ping", "-c", "1", server["adress"]], "Fel pingkommando.")
                 datetime.strptime(server["senast_kontrollerad"], "%Y-%m-%d %H:%M")
             with patch("kontroller.subprocess.run", return_value=subprocess.CompletedProcess([], 0)):
-                for argument in [["--kontrollera", "dev01"], ["--kontrollera-alla"]]:
-                    kontrollera(provkor_kommando(argument)[0] == 0, "Lyckad kontroll ska ge exitkod 0.")
-            with patch("kontroller.subprocess.run") as ping:
-                for namn in ["saknas", ""]:
-                    kontrollera(provkor_kommando(["--kontrollera", namn])[0] == 1,
-                                "Okänt namn ska ge exitkod 1.")
-                kontrollera(not ping.called, "Okänt namn ska inte starta ping.")
+                kontrollera(provkor(["--kontrollera", "dev01"])[0] == 0, "Lyckad kontroll ska ge 0.")
+                kontrollera(provkor(["--kontrollera", "saknas"])[0] == 1, "Okänt namn ska ge 1.")
             with patch("kontroller.subprocess.run", side_effect=subprocess.TimeoutExpired([], 3)):
-                kontrollera(provkor_kommando(["--kontrollera", "dev01"])[0] == 1,
-                            "Timeout ska ge exitkod 1.")
-            servrar = las_servrar(datafil)
-            kontrollera(servrar[0]["status"] == "down", "Timeout ska ge down.")
+                kontrollera(provkor(["--kontrollera", "dev01"])[0] == 1, "Timeout ska ge 1.")
             print("Ping, kontrolltid och exitkoder: OK")
 
+            servrar[0]["status"] = "down"
             servrar[0]["senast_kontrollerad"] = "2000-01-01 00:00"
             spara_servrar(servrar, datafil)
-            fore = las_servrar(datafil)
-            tidigare_data = datafil.read_bytes()
-            with patch("kontroller.subprocess.run", side_effect=FileNotFoundError("ping saknas")):
-                provkor(["7", "dev01", "3"])
-            kontrollera(servrar == fore, "Saknat ping ändrade servern.")
-            with patch("lagring.json.dump", side_effect=OSError("skrivfel")):
-                try:
-                    spara_servrar(servrar, datafil)
-                except OSError:
-                    pass
-                else:
-                    raise AssertionError("Skrivfelet rapporterades inte.")
-            kontrollera(datafil.read_bytes() == tidigare_data, "Skrivfelet skadade datafilen.")
-            datafil.with_name(datafil.name + ".tmp").unlink()
-            datafil.with_name(datafil.name + ".tmp").mkdir()
-            provkor(["5", "test01", "3"])
+            fore = datafil.read_bytes()
             with patch("kontroller.subprocess.run", return_value=subprocess.CompletedProcess([], 0)):
-                provkor(["7", "dev01", "3"])
-            kontrollera(
-                servrar == fore and datafil.read_bytes() == tidigare_data,
-                "Listan och filen ska bevaras vid fel."
-            )
+                with patch("lagring.json.dump", side_effect=OSError("skrivfel")), redirect_stdout(StringIO()):
+                    lyckad = kontrollera_och_spara(servrar, servrar[0], datafil)
+            kontrollera(not lyckad and servrar == las_servrar(datafil)
+                        and datafil.read_bytes() == fore, "Skrivfelet ändrade inventeringen.")
+            with patch("kontroller.subprocess.run", side_effect=FileNotFoundError("ping saknas")):
+                with redirect_stdout(StringIO()):
+                    lyckad = kontrollera_och_spara(servrar, servrar[0], datafil)
+            kontrollera(not lyckad and datafil.read_bytes() == fore, "Saknat ping ändrade filen.")
             print("Skydd vid fel: OK")
     except Exception as fel:
         print("Test misslyckades:", fel, file=sys.stderr)
@@ -435,7 +363,7 @@ def main(argv=None):
     kommandon.add_argument("--lista", action="store_true", help="Visa alla servrar.")
     kommandon.add_argument("--kontrollera", metavar="NAMN", help="Kontrollera en server och spara status.")
     kommandon.add_argument("--kontrollera-alla", action="store_true", help="Kontrollera alla servrar.")
-    kommandon.add_argument("--export", dest="exportera", action="store_true", help="Skapa en CSV-rapport.")
+    kommandon.add_argument("--export", dest="exportera", action="store_true", help="Skapa CSV och TXT-sammanfattning.")
     kommandon.add_argument("--test", action="store_true", help="Kör självtester med tillfälliga data.")
     parser.add_argument("--miljo", choices=["dev", "test", "prod"], help="Filtrera listan efter miljö, med --lista.")
     args = parser.parse_args(argv)

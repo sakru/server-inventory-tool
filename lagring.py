@@ -1,4 +1,4 @@
-# Lagrar serverdata och exporterar CSV.
+# Lagrar serverdata och exporterar rapporter.
 
 import csv
 import json
@@ -65,4 +65,17 @@ def exportera_csv(servrar, rapportkatalog):
         skrivare = csv.DictWriter(fil, fieldnames=FALT, extrasaction="ignore")
         skrivare.writeheader()
         skrivare.writerows(servrar)
+    return rapportfil
+
+
+def exportera_sammanfattning(servrar, rapportfil):
+    validera_servrar(servrar)
+    with rapportfil.open("x", encoding="utf-8") as fil:
+        fil.write(f"{'Miljö':<8} {'up':>5} {'down':>5} {'unknown':>7}\n")
+        for miljo in ["Totalt", "dev", "test", "prod"]:
+            antal = {"up": 0, "down": 0, "unknown": 0}
+            for server in servrar:
+                if miljo == "Totalt" or server["miljo"] == miljo:
+                    antal[server["status"]] += 1
+            fil.write(f"{miljo:<8} {antal['up']:>5} {antal['down']:>5} {antal['unknown']:>7}\n")
     return rapportfil
