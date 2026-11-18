@@ -1,6 +1,6 @@
 # Server Inventory Tool
 
-Det här programmet håller reda på servrar och om de svarar på ping. Serverlistan sparas i en JSON-fil. Det finns en meny för vanlig användning och kommandon för att köra en sak i taget från terminalen.
+Server Inventory Tool håller reda på servrar och om de svarar på ping. Uppgifterna sparas i JSON. Programmet kan användas från en meny eller genom att ange ett kommando direkt i terminalen.
 
 ## Komma igång
 
@@ -36,7 +36,7 @@ I menyn kan du visa och söka efter servrar, lägga till och ta bort dem, filtre
 
 När en server läggs till frågar programmet efter namn, adress, miljö och roll. Namnet måste vara unikt och miljön ska vara `dev`, `test` eller `prod`. För att ta bort en server i `prod` behöver du bekräfta med `ja`. Svaret `nej` avbryter.
 
-För listning, kontroller och export kan du använda kommandon i stället:
+För att visa, kontrollera eller exportera servrar kan du köra följande kommandon:
 
 | Kommando | Vad det gör |
 |---|---|
@@ -80,7 +80,7 @@ En relativ sökväg räknas från mappen där kommandot körs. Absoluta sökväg
 
 Om filen inte finns börjar programmet med en tom lista och skapar filen när något ändras. Mappen där filen ska ligga måste redan finnas. En trasig JSON-fil eller ogiltiga serverdata ger ett felmeddelande och filen lämnas orörd.
 
-Tillägg, borttagning och kontrollresultat sparas direkt. Om skrivningen misslyckas återställs ändringen i minnet.
+Programmet sparar direkt när en server läggs till, tas bort eller kontrolleras. Om det inte går att skriva till filen återställs ändringen i minnet.
 
 ## Kontroller och rapporter
 
@@ -105,11 +105,11 @@ Rapporterna stannar lokalt. `rapporter/` finns i `.gitignore`, tillsammans med `
 
 ## Fördjupningar
 
-De två valda fördjupningarna är säkrare inmatning och en rapport med sammanfattning.
+Fördjupningarna i projektet är säkrare inmatning och en TXT-sammanfattning till rapporten.
 
 Vid tomma fält, blanksteg i namn, fel miljö eller fel menyval frågar programmet igen. Namn och adress får inte innehålla blanksteg, och adressen får inte börja med `-`. Data som läses från JSON kontrolleras också.
 
-Sammanfattningen är TXT-filen som skapas tillsammans med CSV. Den visar statusfördelningen totalt och per miljö.
+TXT-filen visar hur många servrar som har varje status, totalt och i varje miljö.
 
 ## Tester
 
@@ -131,7 +131,7 @@ När allt fungerar skrivs `Alla tester godkända.` och exitkoden blir `0`. Ett t
 - `servrar.json` innehåller inventeringen.
 - `.gitignore` anger vilka filer och mappar Git ska ignorera.
 - `README.md` innehåller instruktionerna för programmet.
-- `REDOGORELSE.md` innehåller ett utkast till förklaringar av koden och arbetet.
-- `REFLEKTION.md` innehåller ett utkast om lösningarnas fördelar, nackdelar och användning i en större miljö.
+- `REDOGORELSE.md` förklarar koden och arbetet.
+- `REFLEKTION.md` tar upp lösningarnas fördelar, nackdelar och användning i en större miljö.
 
 Menyn ligger kvar i `main.py` för att hålla projektet till tre Pythonmoduler. Menyn och kommandoraden använder samma funktioner för kontroller och lagring.
